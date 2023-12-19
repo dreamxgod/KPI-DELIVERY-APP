@@ -1,6 +1,7 @@
 ﻿using KPI_DELIVERY_APP.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
@@ -112,12 +113,19 @@ public class OrderItem
     }
 }
 
+public class ProductStatistics
+{
+    public int ProductId { get; set; }
+    public decimal AveragePrice { get; set; }
+    
+}
+
 public class Order
 {
     public event Action<IProduct, string> DeliveryCompleted;
 
     public int OrderId { get; set; } // Додано для EF Core
-    public Customer Customer { get; set; }
+    public virtual Customer Customer { get; set; }
     public List<OrderItem> Items { get; set; }
     public bool IsDelivered { get; private set; }
 
@@ -238,7 +246,9 @@ class Program
         .Build();
 
         var optionsBuilder = new DbContextOptionsBuilder<MyStoreDbContext>();
-        optionsBuilder.UseSqlServer(configuration.GetConnectionString("DefaultConnection"));
+        optionsBuilder
+            .UseSqlServer(configuration.GetConnectionString("DefaultConnection"))
+            .UseLazyLoadingProxies();
 
         using (var dbContext = new MyStoreDbContext(optionsBuilder.Options))
         {
@@ -267,6 +277,78 @@ class Program
         using (var dbContext = new MyStoreDbContext(optionsBuilder.Options))
         {
             ProcessSampleOrder(dbContext);
+        }
+
+        using (var dbContext = new MyStoreDbContext(optionsBuilder.Options))
+        {
+            var expensiveProducts = dbContext.Products.Where(p => p.Price > 1000);
+            var inStockProducts = dbContext.Products.Where(p => p.StockQuantity > 0);
+
+            // Union
+            var unionResult = expensiveProducts.Union(inStockProducts).ToList();
+
+            // Except
+            var exceptResult = expensiveProducts.Except(inStockProducts).ToList();
+
+            // Intersect
+            var intersectResult = expensiveProducts.Intersect(inStockProducts).ToList();
+
+            var joinResult = dbContext.Orders
+                 .Join(dbContext.Customers,
+                       order => order.Customer.Email,
+                       customer => customer.Email,
+                       (order, customer) => new { CustomerName = customer.Name, OrderId = order.OrderId })
+                 .ToList();
+
+            var distinctProductNames = dbContext.Products.Select(p => p.Name).Distinct().ToList();
+
+            var productGroups = dbContext.Products
+                     .GroupBy(p => p.Price)
+                     .Select(g => new { Price = g.Key, Count = g.Count() })
+                     .ToList();
+
+            var averagePriceProducts = dbContext.Products
+                .GroupBy(p => p.StockQuantity)
+                .Select(g => new { StockQuantity = g.Key, AveragePrice = g.Average(p => p.Price) })
+                .ToList();
+
+            var maxPriceProducts = dbContext.Products
+                .GroupBy(p => p.StockQuantity)
+                .Select(g => new { StockQuantity = g.Key, MaxPrice = g.Max(p => p.Price) })
+                .ToList();
+            //Стратегії Завантаження Зв'язаних Даних
+
+            var ordersWithEagerLoading = dbContext.Orders.Include(o => o.Customer).ToList();//Eager Loading 
+
+            var order = dbContext.Orders.FirstOrDefault(); //Explicit Loading
+            dbContext.Entry(order).Reference(o => o.Customer).Load();
+
+            //Lazy Loading
+            var lazyLoadedOrder = dbContext.Orders.FirstOrDefault();
+            var customerName = lazyLoadedOrder.Customer.Name; //Lazy loading автоматично завантажить virtual 
+
+
+
+            var untrackedProducts = dbContext.Products.AsNoTracking().ToList();
+
+            var product = untrackedProducts.First();
+            product.Price = 2000;
+            dbContext.Update(product);
+            dbContext.SaveChanges();
+
+            var productId = 1;
+            var storedProcedureResult = dbContext.Products
+                .FromSqlRaw("EXEC GetProductById @p0", productId)
+                .ToList();
+
+            var functionName = "CalculateProductStatistics";
+            var functionResult = dbContext.ProductStatistics
+                .FromSqlRaw($"SELECT * FROM {functionName}()")
+                .ToList();
+
+
+
+
         }
     }
 

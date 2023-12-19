@@ -13,6 +13,7 @@ namespace KPI_DELIVERY_APP.Data
 
     public class MyStoreDbContext : DbContext
     {
+        public DbSet<ProductStatistics> ProductStatistics { get; set; }
         public DbSet<Product> Products { get; set; }
         public DbSet<Order> Orders { get; set; }
         public DbSet<OrderItem> OrderItems { get; set; }
