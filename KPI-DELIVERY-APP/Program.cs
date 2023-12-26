@@ -238,6 +238,10 @@ public class OrderManager<TProduct, TStore, TDeliveryService>
 
 class Program
 {
+    private static readonly object LockObject = new object();
+    private static SemaphoreSlim Semaphore = new SemaphoreSlim(1, 1);
+    private static int ProductCounter = 1;
+    private static int ProductCounterTPL = 1;
     static void Main(string[] args)
     {
         var configuration = new ConfigurationBuilder()
@@ -327,7 +331,7 @@ class Program
             var lazyLoadedOrder = dbContext.Orders.FirstOrDefault();
             var customerName = lazyLoadedOrder.Customer.Name; //Lazy loading автоматично завантажить virtual 
 
-
+            //Середня вартість товару який в нас купували найчастіше
 
             var untrackedProducts = dbContext.Products.AsNoTracking().ToList();
 
@@ -349,8 +353,144 @@ class Program
 
 
 
+            var mostFrequentlyPurchasedProduct = dbContext.OrderItems
+                .GroupBy(oi => oi.Product.ProductId)
+                .OrderByDescending(g => g.Count())
+                .Select(g => new { ProductId = g.Key, PurchaseCount = g.Count() })
+                .FirstOrDefault();
+
+            if (mostFrequentlyPurchasedProduct != null)
+            {
+                var averagePrice = dbContext.Products
+                    .Where(p => p.ProductId == mostFrequentlyPurchasedProduct.ProductId)
+                    .Average(p => p.Price);
+
+            }
+        }
+        StartProductCreationThreads(10);
+        AsyncMain(args).GetAwaiter().GetResult();
+
+    }
+    public static async Task AsyncMain(string[] args)
+    {
+        await StartProductCreationTasksAsync(10);
+        await DisplayDataConcurrently();
+    }
+
+    private static void StartProductCreationThreads(int numberOfThreads)
+    {
+        var threads = new Thread[numberOfThreads];
+        for (int i = 0; i < threads.Length; i++)
+        {
+            threads[i] = new Thread(() => CreateAndSaveProduct(new MyStoreDbContext(/* параметри */)));
+            threads[i].Start();
+        }
+
+        foreach (var thread in threads)
+        {
+            thread.Join();
         }
     }
+
+    private static void CreateAndSaveProduct(MyStoreDbContext dbContext)
+    {
+        var product = GenerateUniqueProduct();
+        dbContext.Products.Add(product);
+        dbContext.SaveChanges();
+    }
+
+    private static Product GenerateUniqueProduct()
+    {
+        lock (LockObject)
+        {
+            return new Product(
+                $"product-{ProductCounter++}",
+                100,                         
+                "some description",              
+                10                            
+            );
+        }
+    }
+
+    private static async Task StartProductCreationTasksAsync(int numberOfTasks)
+    {
+        var tasks = new List<Task>();
+        for (int i = 0; i < numberOfTasks; i++)
+        {
+            tasks.Add(CreateAndSaveProductAsync(new MyStoreDbContext(/* параметри */)));
+        }
+
+        await Task.WhenAll(tasks);
+    }
+
+    private static async Task CreateAndSaveProductAsync(MyStoreDbContext dbContext)
+    {
+        var product = await GenerateUniqueProductAsync();
+        dbContext.Products.Add(product);
+        await dbContext.SaveChangesAsync();
+    }
+
+    private static async Task<Product> GenerateUniqueProductAsync()
+    {
+        await Semaphore.WaitAsync();
+        try
+        {
+            return new Product(
+                $"product-{ProductCounterTPL++}",
+                100,
+                "some desc",
+                10
+            );
+        }
+        finally
+        {
+            Semaphore.Release();
+        }
+    }
+
+    private static async Task DisplayDataConcurrently()
+    {
+        var displayProductsTask = DisplayProductsAsync();
+        var displayOrdersTask = DisplayOrdersAsync();
+
+        await Task.WhenAll(displayProductsTask, displayOrdersTask);
+    }
+
+    private static async Task DisplayProductsAsync()
+    {
+        using (var dbContext = new MyStoreDbContext(/* параметри */))
+        {
+            var products = await dbContext.Products.ToListAsync();
+            Console.WriteLine("Список усіх продуктів:");
+            foreach (var product in products)
+            {
+                Console.WriteLine($"ID: {product.ProductId}, Назва: {product.Name}, Ціна: {product.Price}, Опис: {product.Description}, Кількість на складі: {product.StockQuantity}");
+            }
+        }
+    }
+
+    private static async Task DisplayOrdersAsync()
+    {
+        using (var dbContext = new MyStoreDbContext(/* параметри */))
+        {
+            var orders = await dbContext.Orders
+                                        .Include(o => o.Customer)
+                                        .Include(o => o.Items)
+                                        .ThenInclude(oi => oi.Product)
+                                        .ToListAsync();
+
+            Console.WriteLine("\nСписок усіх замовлень:");
+            foreach (var order in orders)
+            {
+                Console.WriteLine($"Замовлення ID: {order.OrderId}, Клієнт: {order.Customer.Name}, Електронна пошта: {order.Customer.Email}");
+                foreach (var item in order.Items)
+                {
+                    Console.WriteLine($"\tПродукт: {item.Product.Name}, Кількість: {item.Quantity}");
+                }
+            }
+        }
+    }
+
 
     static void ProcessSampleOrder(MyStoreDbContext dbContext)
     {
